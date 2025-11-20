@@ -6,145 +6,114 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 
+# Класс П-регулятора
 
-# Классы для моделирования
+class P_Controller:
+    """
+    Закон управления: u = error * k
+    """
 
-class PID:
-    # ПИД регулятор с ограничением выхода
+    def __init__(self, k, min_val=None, max_val=None):
+        self.k = k  # Коэффициент усиления
+        self.min_val = min_val  # Нижнее ограничение
+        self.max_val = max_val  # Верхнее ограничение
 
-    def __init__(self, kp, ki, kd, min_val=None, max_val=None):
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self.min_val = min_val
-        self.max_val = max_val
-        self.integral = 0.0
-        self.prev_error = 0.0
+    def update(self, error, dt=None):
+        output = error * self.k
 
-    def update(self, error, dt):
-        self.integral += error * dt
-
-        # Не даем интегралу улетать в бесконечность
-        if self.max_val is not None:
-            # Огран интегральной части
-            limit_i = max(abs(self.min_val), abs(self.max_val))
-            self.integral = np.clip(self.integral, -limit_i, limit_i)
-
-        derivative = (error - self.prev_error) / dt if dt > 0 else 0.0
-        self.prev_error = error
-
-        output = self.kp * error + self.ki * self.integral + self.kd * derivative
-
+        # Ограничение выхода
         if self.min_val is not None and self.max_val is not None:
             output = np.clip(output, self.min_val, self.max_val)
 
         return output
 
-    def reset(self):
-        self.integral = 0.0
-        self.prev_error = 0.0
 
+# Математическая модель БПЛА
 
 class UAVModel:
     def __init__(self):
         self.g = 9.81
 
-        # Значения предположительно типичные для бпла
+        # Параметры из схемы (постоянные времени)
         self.T_nxa = 0.5
         self.T_nya = 0.3
-        self.xi_nya = 0.7  # демпфирование
+        self.xi_nya = 0.7
         self.T_nza = 0.5
         self.T_gamma = 0.2
 
-        # Ограничение скорости для первого контура
+        # Ограничение скорости Vmax
         self.V_max_limit = 100.0
 
     def get_derivatives(self, state, u_control):
         """
-        Вычисляет правые части ду: dy/dt = f(y, u)
+        Правые части ДУ
         state: [x, y, z, V, theta, psi, nxa, nya, d_nya, nza, gamma, d_gamma]
-        Индексы: 0  1  2  3  4      5    6    7    8      9    10     11
-        u_control: [u_nxa, u_nya, u_nza, u_gamma]
         """
-        # Распаковка состояния
         x, y_h, z, V, theta, psi = state[0:6]
         nxa, nya, d_nya, nza = state[6:10]
         gamma, d_gamma = state[10:12]
 
         u_nxa, u_nya, u_nza, u_gamma = u_control
 
-        # От деления на ноль
         if V < 0.1: V = 0.1
 
-        # Уравнения движения
+        # Кинематика
         dx = V * np.cos(psi) * np.cos(theta)
-        dy = V * np.sin(theta)  # y - высота H
+        dy = V * np.sin(theta)
         dz = -V * np.sin(psi) * np.cos(theta)
 
         dV = self.g * (nxa - np.sin(theta))
 
-        # Косинус тэта в знаменателе может дать 0 при 90 град добавляем eps для защиты
         cos_theta = np.cos(theta)
         if abs(cos_theta) < 1e-3: cos_theta = 1e-3 * np.sign(cos_theta)
 
         dTheta = (self.g / V) * (nya * np.cos(gamma) - nza * np.sin(gamma) - cos_theta)
-
         dPsi = -(self.g / (V * cos_theta)) * (nya * np.sin(gamma) + nza * np.cos(gamma))
 
-        # Контур скорости nxa апериодическое звено 1 порядка
+        # Динамика приводов
         dnxa = (u_nxa - nxa) / self.T_nxa
-
-        # Контур высоты перегрузка ny: колебательное звено 2 порядка
-        # d(nya)/dt = d_nya (переменная состояния 8)
         dd_nya = (u_nya - 2 * self.xi_nya * self.T_nya * d_nya - nya) / (self.T_nya ** 2)
-
-        # Контур боковой перегрузки nz: апериодическое звено
         dnza = (u_nza - nza) / self.T_nza
-
-        # Контур крена гамма: интегрирующее звено с запаздыванием
         dd_gamma = (u_gamma - d_gamma) / self.T_gamma
 
         return np.array([dx, dy, dz, dV, dTheta, dPsi, dnxa, d_nya, dd_nya, dnza, d_gamma, dd_gamma])
 
     def rk4_step(self, state, u_control, dt):
-        # Один шаг интегрирования
         k1 = self.get_derivatives(state, u_control)
         k2 = self.get_derivatives(state + 0.5 * dt * k1, u_control)
         k3 = self.get_derivatives(state + 0.5 * dt * k2, u_control)
         k4 = self.get_derivatives(state + dt * k3, u_control)
-
         new_state = state + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
         return new_state
 
 
-class Autopilot:
-    # Контуры управления
+# Автопилот
 
+class Autopilot:
     def __init__(self):
-        # Создаем пид регуляторы и ошибку ограничим
-        self.pid_V = PID(kp=0.5, ki=0.05, kd=0.1)
+
+        # Контур скорости
+        # K=0.5 (подобран)
+        self.reg_V = P_Controller(k=0.5)
 
         # Контур высоты
-        # Внешний контур
-        self.pid_H_outer = PID(kp=0.5, ki=0.0, kd=0.0, min_val=-2.0, max_val=2.0)  # +-2 огран
-        # Внутренний контур
-        self.pid_H_inner = PID(kp=2.0, ki=0.1, kd=0.1, min_val=-10.0, max_val=10.0)  # Выход - перегрузка
+        # Внешний контур (по высоте) огран выхода +-2
+        self.reg_H_outer = P_Controller(k=0.5, min_val=-2.0, max_val=2.0)
+        # Внутренний контур (по верт скорости) огран выхода +-10
+        self.reg_H_inner = P_Controller(k=2.0, min_val=-10.0, max_val=10.0)
 
-        # Контур курса пси
-        # Внешний контур
-        self.limit_gamma = np.deg2rad(20.0)  # +-20
-        self.pid_Psi_outer = PID(kp=2.0, ki=0.0, kd=0.0, min_val=-self.limit_gamma, max_val=self.limit_gamma)
-        # Внутренний контур
-        self.pid_Gamma_inner = PID(kp=5.0, ki=0.0, kd=1.0)
+        # Контур курса
+        # Огран крена +-20 градусов (в радианах)
+        self.limit_gamma = np.deg2rad(20.0)
+        # Внешний контур (по курсу)
+        self.reg_Psi_outer = P_Controller(k=2.5, min_val=-self.limit_gamma, max_val=self.limit_gamma)
+        # Внутренний контур (по крену)
+        self.reg_Gamma_inner = P_Controller(k=4.0)
 
-        # Контур боковой перегрузки (nz)
-        self.pid_nz = PID(kp=1.0, ki=0.1, kd=0.0)
+        # Контур боковой перегрузки
+        self.reg_nz = P_Controller(k=1.0)
 
     def calculate_controls(self, state, targets, dt, uav_params):
-
-        # state текущий вектор состояния
-        # targets словарь с целевыми значениями
-        # Извлекаем переменные (в радианах и СИ)
         y_h = state[1]
         V = state[3]
         theta = state[4]
@@ -153,88 +122,71 @@ class Autopilot:
         nza = state[9]
         gamma = state[10]
 
-        # Канал скорости V
+        # Скорость
         V_err = targets['V'] - V
-
-        # Ограничение ошибки dV (+- Vmax/2)
-        # Пусть Vmax = 100
+        # Ограничение ошибки ( +- Vmax/2)
         limit_dV = uav_params.V_max_limit / 2.0
         V_err_clamped = np.clip(V_err, -limit_dV, limit_dV)
 
-        u_nxa = self.pid_V.update(V_err_clamped, dt)
+        u_nxa = self.reg_V.update(V_err_clamped)
 
-        # Канал высоты H
+        #Высота
         H_err = targets['H'] - y_h
 
-        # Внешний контур получаем желаемую вертикальную скорость
-        H_dot_zad = self.pid_H_outer.update(H_err, dt)  #  +-2
+        # Внешний контур ошибка высоты требуемая H_dot
+        H_dot_zad = self.reg_H_outer.update(H_err)
 
-        # Текущая верт скорость
+        # Внутренний контур ошибка H_dot -> перегрузка
         H_dot_curr = V * np.sin(theta)
-
         dH_dot = H_dot_zad - H_dot_curr
 
-        # Внутренний контур + компенсация тяжести
-        # Выход внутреннего ПИД + 1 = u_nya
-        u_nya = self.pid_H_inner.update(dH_dot, dt) + 1.0
+        # +1 для компенсации веса
+        u_nya = self.reg_H_inner.update(dH_dot) + 1.0
 
-        # Канал курса пси
-        # Обработка перехода через 360 градусов для корректной ошибки
+        # Курс
         Psi_err = targets['Psi'] - psi
+        # Корректировка угла (чтобы не крутиться через 360)
         while Psi_err > np.pi: Psi_err -= 2 * np.pi
         while Psi_err < -np.pi: Psi_err += 2 * np.pi
 
-        # Внешний контур получаем желаемый крен
-        gamma_zad = self.pid_Psi_outer.update(Psi_err, dt)  #  +-20 град
+        # Внешний контур ошибка курса -> требуемый крен
+        gamma_zad = self.reg_Psi_outer.update(Psi_err)
 
-        # Внутренний контур
+        # Внутренний контур ошибка крена
         gamma_err = gamma_zad - gamma
-        u_gamma = self.pid_Gamma_inner.update(gamma_err, dt)
+        u_gamma = self.reg_Gamma_inner.update(gamma_err)
 
-        # Канал боковой перегрузки (Nz)
-        # Задача держать 0
+        # Боковая перегрузка
         nz_err = 0.0 - nza
-        u_nza = self.pid_nz.update(nz_err, dt)
+        u_nza = self.reg_nz.update(nz_err)
 
         return np.array([u_nxa, u_nya, u_nza, u_gamma])
-
-    def reset(self):
-        self.pid_V.reset()
-        self.pid_H_outer.reset()
-        self.pid_H_inner.reset()
-        self.pid_Psi_outer.reset()
-        self.pid_Gamma_inner.reset()
-        self.pid_nz.reset()
 
 
 # ГУИшка
 
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Моделирование динамики БПЛА")
+        self.setWindowTitle("Моделирование БПЛА (П-регулятор)")
         self.resize(1000, 700)
 
-        # Центральный виджет
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
 
-        # Панелька настроек
+        # Левая панель настроек
         settings_panel = QWidget()
         settings_panel.setFixedWidth(250)
         settings_layout = QVBoxLayout(settings_panel)
         main_layout.addWidget(settings_panel)
 
-        # Целевые параметры
+        # Задание
         grp_targets = QGroupBox("Задание")
         layout_t = QVBoxLayout()
-
         self.spin_V_zad = self.create_spinbox("Скорость V (м/с):", 25.0, 10.0, 100.0, layout_t)
         self.spin_H_zad = self.create_spinbox("Высота H (м):", 100.0, 0.0, 5000.0, layout_t)
         self.spin_Psi_zad = self.create_spinbox("Курс Psi (град):", 45.0, -180.0, 360.0, layout_t)
-
         grp_targets.setLayout(layout_t)
         settings_layout.addWidget(grp_targets)
 
@@ -247,7 +199,7 @@ class MainWindow(QMainWindow):
         grp_init.setLayout(layout_i)
         settings_layout.addWidget(grp_init)
 
-        # Параметры моделирования
+        # Моделирование
         grp_sim = QGroupBox("Моделирование")
         layout_s = QVBoxLayout()
         self.spin_Time = self.create_spinbox("Время T (c):", 30.0, 5.0, 200.0, layout_s)
@@ -255,13 +207,12 @@ class MainWindow(QMainWindow):
         grp_sim.setLayout(layout_s)
         settings_layout.addWidget(grp_sim)
 
-        # Кнопка запуска
-        self.btn_start = QPushButton("Запустить моделирование")
+        # Кнопка
+        self.btn_start = QPushButton("Запустить")
         self.btn_start.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;")
         self.btn_start.clicked.connect(self.run_simulation)
         settings_layout.addWidget(self.btn_start)
-
-        settings_layout.addStretch()  # Пустое место снизу
+        settings_layout.addStretch()
 
         # Графики
         self.figure = plt.figure(figsize=(10, 8))
@@ -279,11 +230,11 @@ class MainWindow(QMainWindow):
         return spin
 
     def run_simulation(self):
-        # Считываем параметры из интерфейса
+        # Считывание параметров
         V_zad = self.spin_V_zad.value()
         H_zad = self.spin_H_zad.value()
         Psi_zad_deg = self.spin_Psi_zad.value()
-        Psi_zad = np.deg2rad(Psi_zad_deg)  # Перевод в радианы
+        Psi_zad = np.deg2rad(Psi_zad_deg)
 
         V0 = self.spin_V0.value()
         H0 = self.spin_H0.value()
@@ -300,19 +251,12 @@ class MainWindow(QMainWindow):
         # Начальный вектор состояния
         state = np.zeros(12)
         state[0] = 0.0  # x
-        state[1] = H0  # y (H)
-        state[2] = 0.0  # z
+        state[1] = H0  # H
         state[3] = V0  # V
-        state[4] = 0.0  # Theta (пусть горизонтально летит)
         state[5] = Psi0  # Psi
-        state[6] = 0.0  # nxa
-        state[7] = 1.0  # nya (в гориз полете перегрузка = 1)
-        state[8] = 0.0  # d_nya
-        state[9] = 0.0  # nza
-        state[10] = 0.0  # gamma
-        state[11] = 0.0  # d_gamma
+        state[7] = 1.0  # nya
 
-        # Массивы для хранения истории (для графиков)
+        # Массивы для графиков
         time_hist = np.linspace(0, T_max, steps)
         H_hist = np.zeros(steps)
         V_hist = np.zeros(steps)
@@ -322,64 +266,53 @@ class MainWindow(QMainWindow):
 
         target_dict = {'V': V_zad, 'H': H_zad, 'Psi': Psi_zad}
 
-        # Цикл моделирования
+        # Цикл симуляции
         for i in range(steps):
-            # Сохраняем текущие значения
             H_hist[i] = state[1]
             V_hist[i] = state[3]
-            Psi_hist[i] = np.rad2deg(state[5])  # Сохраняем в градусах
+            Psi_hist[i] = np.rad2deg(state[5])
             Gamma_hist[i] = np.rad2deg(state[10])
             Nya_hist[i] = state[7]
 
-            # Шаг управления (расчет U)
+            # Расчет управления
             controls = autopilot.calculate_controls(state, target_dict, dt, model)
 
-            # Шаг Рунге-Кутта
             state = model.rk4_step(state, controls, dt)
 
-        # Графики
+        # Отрисовка
         self.figure.clear()
 
-        # График 1 Высота
         ax1 = self.figure.add_subplot(2, 2, 1)
-        ax1.plot(time_hist, H_hist, label='H тек', color='blue')
+        ax1.plot(time_hist, H_hist, 'b', label='H тек')
         ax1.plot(time_hist, [H_zad] * steps, 'r--', label='H зад')
         ax1.set_title("Высота (м)")
         ax1.grid(True)
         ax1.legend()
 
-        # График 2 Скорость
         ax2 = self.figure.add_subplot(2, 2, 2)
-        ax2.plot(time_hist, V_hist, label='V тек', color='green')
+        ax2.plot(time_hist, V_hist, 'g', label='V тек')
         ax2.plot(time_hist, [V_zad] * steps, 'r--', label='V зад')
         ax2.set_title("Скорость (м/с)")
         ax2.grid(True)
         ax2.legend()
 
-        # График 3 Курс
         ax3 = self.figure.add_subplot(2, 2, 3)
-        ax3.plot(time_hist, Psi_hist, label='Psi тек', color='purple')
+        ax3.plot(time_hist, Psi_hist, 'purple', label='Psi тек')
         ax3.plot(time_hist, [Psi_zad_deg] * steps, 'r--', label='Psi зад')
         ax3.set_title("Курс (град)")
         ax3.grid(True)
         ax3.legend()
 
-        # График 4 Крен и Перегрузка
         ax4 = self.figure.add_subplot(2, 2, 4)
-        ax4.plot(time_hist, Gamma_hist, label='Крен (град)', color='orange')
-        ax4.plot(time_hist, Nya_hist, label='Ny (g)', color='black', alpha=0.5)
-        # Линия ограничения крена
+        ax4.plot(time_hist, Gamma_hist, 'orange', label='Крен (град)')
         ax4.plot(time_hist, [20] * steps, 'r:', alpha=0.5)
         ax4.plot(time_hist, [-20] * steps, 'r:', alpha=0.5)
-        ax4.set_title("Параметры управления")
+        ax4.set_title("Крен (град)")
         ax4.grid(True)
         ax4.legend()
 
         self.figure.tight_layout()
         self.canvas.draw()
-
-
-# Создаем приложение, окно, бесконечный цикл
 
 
 if __name__ == "__main__":
