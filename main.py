@@ -2,53 +2,35 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QLabel, QDoubleSpinBox, QPushButton, QGroupBox)
+                             QHBoxLayout, QLabel, QDoubleSpinBox, QPushButton,
+                             QGroupBox, QTabWidget, QDialog, QFormLayout)
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 
-# Класс П-регулятора
-
 class P_Controller:
-    """
-    Закон управления: u = error * k
-    """
-
     def __init__(self, k, min_val=None, max_val=None):
-        self.k = k  # Коэффициент усиления
-        self.min_val = min_val  # Нижнее ограничение
-        self.max_val = max_val  # Верхнее ограничение
+        self.k = k
+        self.min_val = min_val
+        self.max_val = max_val
 
-    def update(self, error, dt=None):
+    def update(self, error):
         output = error * self.k
-
-        # Ограничение выхода
         if self.min_val is not None and self.max_val is not None:
             output = np.clip(output, self.min_val, self.max_val)
-
         return output
 
-
-# Математическая модель БПЛА
 
 class UAVModel:
     def __init__(self):
         self.g = 9.81
-
-        # Параметры из схемы (постоянные времени)
-        self.T_nxa = 0.5
-        self.T_nya = 0.3
+        self.T_nxa = 0.1
+        self.T_nya = 0.1
         self.xi_nya = 0.7
-        self.T_nza = 0.5
+        self.T_nza = 0.1
         self.T_gamma = 0.2
-
-        # Ограничение скорости Vmax
         self.V_max_limit = 100.0
 
     def get_derivatives(self, state, u_control):
-        """
-        Правые части ДУ
-        state: [x, y, z, V, theta, psi, nxa, nya, d_nya, nza, gamma, d_gamma]
-        """
         x, y_h, z, V, theta, psi = state[0:6]
         nxa, nya, d_nya, nza = state[6:10]
         gamma, d_gamma = state[10:12]
@@ -57,7 +39,6 @@ class UAVModel:
 
         if V < 0.1: V = 0.1
 
-        # Кинематика
         dx = V * np.cos(psi) * np.cos(theta)
         dy = V * np.sin(theta)
         dz = -V * np.sin(psi) * np.cos(theta)
@@ -70,7 +51,6 @@ class UAVModel:
         dTheta = (self.g / V) * (nya * np.cos(gamma) - nza * np.sin(gamma) - cos_theta)
         dPsi = -(self.g / (V * cos_theta)) * (nya * np.sin(gamma) + nza * np.cos(gamma))
 
-        # Динамика приводов
         dnxa = (u_nxa - nxa) / self.T_nxa
         dd_nya = (u_nya - 2 * self.xi_nya * self.T_nya * d_nya - nya) / (self.T_nya ** 2)
         dnza = (u_nza - nza) / self.T_nza
@@ -87,33 +67,17 @@ class UAVModel:
         return new_state
 
 
-# Автопилот
-
 class Autopilot:
     def __init__(self):
-
-        # Контур скорости
-        # K=0.5 (подобран)
-        self.reg_V = P_Controller(k=0.5)
-
-        # Контур высоты
-        # Внешний контур (по высоте) огран выхода +-2
-        self.reg_H_outer = P_Controller(k=0.5, min_val=-2.0, max_val=2.0)
-        # Внутренний контур (по верт скорости) огран выхода +-10
-        self.reg_H_inner = P_Controller(k=2.0, min_val=-10.0, max_val=10.0)
-
-        # Контур курса
-        # Огран крена +-20 градусов (в радианах)
+        self.reg_V = P_Controller(k=0.1, min_val=-10.0, max_val=10.0)
+        self.reg_H_outer = P_Controller(k=0.1, min_val=-2.0, max_val=2.0)
+        self.reg_H_inner = P_Controller(k=0.3, min_val=-10.0, max_val=10.0)
         self.limit_gamma = np.deg2rad(20.0)
-        # Внешний контур (по курсу)
-        self.reg_Psi_outer = P_Controller(k=2.5, min_val=-self.limit_gamma, max_val=self.limit_gamma)
-        # Внутренний контур (по крену)
-        self.reg_Gamma_inner = P_Controller(k=4.0)
+        self.reg_Psi_outer = P_Controller(k=-0.8, min_val=-self.limit_gamma, max_val=self.limit_gamma)
+        self.reg_Gamma_inner = P_Controller(k=3.0)
+        self.reg_nz = P_Controller(k=2.0)
 
-        # Контур боковой перегрузки
-        self.reg_nz = P_Controller(k=1.0)
-
-    def calculate_controls(self, state, targets, dt, uav_params):
+    def calculate_controls(self, state, targets, uav_params):
         y_h = state[1]
         V = state[3]
         theta = state[4]
@@ -122,67 +86,90 @@ class Autopilot:
         nza = state[9]
         gamma = state[10]
 
-        # Скорость
         V_err = targets['V'] - V
-        # Ограничение ошибки ( +- Vmax/2)
-        limit_dV = uav_params.V_max_limit / 2.0
-        V_err_clamped = np.clip(V_err, -limit_dV, limit_dV)
+        u_nxa = self.reg_V.update(V_err) + np.sin(theta)
 
-        u_nxa = self.reg_V.update(V_err_clamped)
-
-        #Высота
         H_err = targets['H'] - y_h
-
-        # Внешний контур ошибка высоты требуемая H_dot
         H_dot_zad = self.reg_H_outer.update(H_err)
 
-        # Внутренний контур ошибка H_dot -> перегрузка
         H_dot_curr = V * np.sin(theta)
         dH_dot = H_dot_zad - H_dot_curr
 
-        # +1 для компенсации веса
         u_nya = self.reg_H_inner.update(dH_dot) + 1.0
 
-        # Курс
         Psi_err = targets['Psi'] - psi
-        # Корректировка угла (чтобы не крутиться через 360)
         while Psi_err > np.pi: Psi_err -= 2 * np.pi
         while Psi_err < -np.pi: Psi_err += 2 * np.pi
 
-        # Внешний контур ошибка курса -> требуемый крен
         gamma_zad = self.reg_Psi_outer.update(Psi_err)
 
-        # Внутренний контур ошибка крена
         gamma_err = gamma_zad - gamma
         u_gamma = self.reg_Gamma_inner.update(gamma_err)
 
-        # Боковая перегрузка
         nz_err = 0.0 - nza
         u_nza = self.reg_nz.update(nz_err)
 
         return np.array([u_nxa, u_nya, u_nza, u_gamma])
 
 
-# ГУИшка
+class ControllerSettingsDialog(QDialog):
+    def __init__(self, autopilot):
+        super().__init__()
+        self.setWindowTitle("Настройки коэффициентов регулятора")
+        self.autopilot = autopilot
+        self.resize(300, 300)
+        layout = QFormLayout()
+
+        self.spin_V = self.create_spin(self.autopilot.reg_V)
+        layout.addRow("Скорость (V) K:", self.spin_V)
+
+        self.spin_H_out = self.create_spin(self.autopilot.reg_H_outer)
+        layout.addRow("Высота (H) K:", self.spin_H_out)
+
+        self.spin_H_in = self.create_spin(self.autopilot.reg_H_inner)
+        layout.addRow("Вертик. скор. (H_dot) K:", self.spin_H_in)
+
+        self.spin_Psi = self.create_spin(self.autopilot.reg_Psi_outer)
+        layout.addRow("Курс (Psi) K:", self.spin_Psi)
+
+        self.spin_Gamma = self.create_spin(self.autopilot.reg_Gamma_inner)
+        layout.addRow("Крен (Gamma) K:", self.spin_Gamma)
+
+        self.spin_nz = self.create_spin(self.autopilot.reg_nz)
+        layout.addRow("Бок. перегрузка (nz) K:", self.spin_nz)
+
+        self.setLayout(layout)
+
+    def create_spin(self, controller):
+        spin = QDoubleSpinBox()
+        spin.setRange(-100.0, 100.0)
+        spin.setSingleStep(0.1)
+        spin.setValue(controller.k)
+        spin.valueChanged.connect(lambda val, c=controller: self.update_k(c, val))
+        return spin
+
+    def update_k(self, controller, value):
+        controller.k = value
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Моделирование БПЛА (П-регулятор)")
-        self.resize(1000, 700)
+        self.setWindowTitle("Моделирование БПЛА")
+        self.resize(1100, 800)
+
+        self.autopilot = Autopilot()
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
 
-        # Левая панель настроек
         settings_panel = QWidget()
         settings_panel.setFixedWidth(250)
         settings_layout = QVBoxLayout(settings_panel)
         main_layout.addWidget(settings_panel)
 
-        # Задание
-        grp_targets = QGroupBox("Задание")
+        grp_targets = QGroupBox("Задание (Target)")
         layout_t = QVBoxLayout()
         self.spin_V_zad = self.create_spinbox("Скорость V (м/с):", 25.0, 10.0, 100.0, layout_t)
         self.spin_H_zad = self.create_spinbox("Высота H (м):", 100.0, 0.0, 5000.0, layout_t)
@@ -190,8 +177,7 @@ class MainWindow(QMainWindow):
         grp_targets.setLayout(layout_t)
         settings_layout.addWidget(grp_targets)
 
-        # Начальные условия
-        grp_init = QGroupBox("Начальные условия")
+        grp_init = QGroupBox("Начальные условия (Init)")
         layout_i = QVBoxLayout()
         self.spin_V0 = self.create_spinbox("V0 (м/с):", 20.0, 1.0, 100.0, layout_i)
         self.spin_H0 = self.create_spinbox("H0 (м):", 50.0, 0.0, 5000.0, layout_i)
@@ -199,25 +185,36 @@ class MainWindow(QMainWindow):
         grp_init.setLayout(layout_i)
         settings_layout.addWidget(grp_init)
 
-        # Моделирование
-        grp_sim = QGroupBox("Моделирование")
+        grp_sim = QGroupBox("Симуляция")
         layout_s = QVBoxLayout()
-        self.spin_Time = self.create_spinbox("Время T (c):", 30.0, 5.0, 200.0, layout_s)
-        self.spin_dt = self.create_spinbox("Шаг dt (c):", 0.05, 0.001, 0.5, layout_s, decimals=3)
+        self.spin_Time = self.create_spinbox("Время T (c):", 60.0, 5.0, 500.0, layout_s)
         grp_sim.setLayout(layout_s)
         settings_layout.addWidget(grp_sim)
 
-        # Кнопка
-        self.btn_start = QPushButton("Запустить")
-        self.btn_start.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;")
+        self.btn_settings = QPushButton("Настройки ПИ-регулятора")
+        self.btn_settings.clicked.connect(self.open_settings)
+        settings_layout.addWidget(self.btn_settings)
+
+        self.btn_start = QPushButton("Запустить моделирование")
+        self.btn_start.setStyleSheet("background-color: #FF69B4; color: white; font-weight: bold; padding: 12px;")
         self.btn_start.clicked.connect(self.run_simulation)
         settings_layout.addWidget(self.btn_start)
         settings_layout.addStretch()
 
-        # Графики
-        self.figure = plt.figure(figsize=(10, 8))
-        self.canvas = FigureCanvas(self.figure)
-        main_layout.addWidget(self.canvas)
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+
+        self.fig1 = plt.figure(figsize=(10, 8))
+        self.canvas1 = FigureCanvas(self.fig1)
+        self.tabs.addTab(self.canvas1, "Динамика полета")
+
+        self.fig2 = plt.figure(figsize=(10, 8))
+        self.canvas2 = FigureCanvas(self.fig2)
+        self.tabs.addTab(self.canvas2, "Перегрузки")
+
+        self.fig3 = plt.figure(figsize=(10, 8))
+        self.canvas3 = FigureCanvas(self.fig3)
+        self.tabs.addTab(self.canvas3, "Сигналы управления")
 
     def create_spinbox(self, text, val, min_v, max_v, parent_layout, decimals=1):
         label = QLabel(text)
@@ -229,8 +226,11 @@ class MainWindow(QMainWindow):
         parent_layout.addWidget(spin)
         return spin
 
+    def open_settings(self):
+        dialog = ControllerSettingsDialog(self.autopilot)
+        dialog.exec()
+
     def run_simulation(self):
-        # Считывание параметров
         V_zad = self.spin_V_zad.value()
         H_zad = self.spin_H_zad.value()
         Psi_zad_deg = self.spin_Psi_zad.value()
@@ -241,78 +241,138 @@ class MainWindow(QMainWindow):
         Psi0 = np.deg2rad(self.spin_Psi0.value())
 
         T_max = self.spin_Time.value()
-        dt = self.spin_dt.value()
+        dt = 0.02
         steps = int(T_max / dt)
 
-        # Инициализация
         model = UAVModel()
-        autopilot = Autopilot()
 
-        # Начальный вектор состояния
         state = np.zeros(12)
-        state[0] = 0.0  # x
-        state[1] = H0  # H
-        state[3] = V0  # V
-        state[5] = Psi0  # Psi
-        state[7] = 1.0  # nya
+        state[0] = 0.0
+        state[1] = H0
+        state[3] = V0
+        state[5] = Psi0
+        state[7] = 1.0
 
-        # Массивы для графиков
         time_hist = np.linspace(0, T_max, steps)
+
         H_hist = np.zeros(steps)
         V_hist = np.zeros(steps)
         Psi_hist = np.zeros(steps)
-        Gamma_hist = np.zeros(steps)
+
+        Nxa_hist = np.zeros(steps)
         Nya_hist = np.zeros(steps)
+        Nza_hist = np.zeros(steps)
+        Gamma_hist = np.zeros(steps)
+
+        U_nxa_hist = np.zeros(steps)
+        U_nya_hist = np.zeros(steps)
+        U_nza_hist = np.zeros(steps)
+        U_gamma_hist = np.zeros(steps)
 
         target_dict = {'V': V_zad, 'H': H_zad, 'Psi': Psi_zad}
 
-        # Цикл симуляции
         for i in range(steps):
             H_hist[i] = state[1]
             V_hist[i] = state[3]
             Psi_hist[i] = np.rad2deg(state[5])
-            Gamma_hist[i] = np.rad2deg(state[10])
-            Nya_hist[i] = state[7]
 
-            # Расчет управления
-            controls = autopilot.calculate_controls(state, target_dict, dt, model)
+            Nxa_hist[i] = state[6]
+            Nya_hist[i] = state[7]
+            Nza_hist[i] = state[9]
+            Gamma_hist[i] = np.rad2deg(state[10])
+
+            controls = self.autopilot.calculate_controls(state, target_dict, model)
+
+            U_nxa_hist[i] = controls[0]
+            U_nya_hist[i] = controls[1]
+            U_nza_hist[i] = controls[2]
+            U_gamma_hist[i] = np.rad2deg(controls[3])
 
             state = model.rk4_step(state, controls, dt)
 
-        # Отрисовка
-        self.figure.clear()
-
-        ax1 = self.figure.add_subplot(2, 2, 1)
-        ax1.plot(time_hist, H_hist, 'b', label='H тек')
-        ax1.plot(time_hist, [H_zad] * steps, 'r--', label='H зад')
-        ax1.set_title("Высота (м)")
+        self.fig1.clear()
+        ax1 = self.fig1.add_subplot(2, 2, 1)
+        ax1.plot(time_hist, H_hist, 'b', linewidth=2, label=r'$H_{тек}$')
+        ax1.plot(time_hist, [H_zad] * steps, 'r--', label=r'$H_{зад}$')
+        ax1.set_title("Высота")
+        ax1.set_xlabel("Время, с")
+        ax1.set_ylabel("H, м")
         ax1.grid(True)
         ax1.legend()
 
-        ax2 = self.figure.add_subplot(2, 2, 2)
-        ax2.plot(time_hist, V_hist, 'g', label='V тек')
-        ax2.plot(time_hist, [V_zad] * steps, 'r--', label='V зад')
-        ax2.set_title("Скорость (м/с)")
+        ax2 = self.fig1.add_subplot(2, 2, 2)
+        ax2.plot(time_hist, V_hist, 'g', linewidth=2, label=r'$V_{тек}$')
+        ax2.plot(time_hist, [V_zad] * steps, 'r--', label=r'$V_{зад}$')
+        ax2.set_title("Скорость")
+        ax2.set_xlabel("Время, с")
+        ax2.set_ylabel("V, м/с")
         ax2.grid(True)
         ax2.legend()
 
-        ax3 = self.figure.add_subplot(2, 2, 3)
-        ax3.plot(time_hist, Psi_hist, 'purple', label='Psi тек')
-        ax3.plot(time_hist, [Psi_zad_deg] * steps, 'r--', label='Psi зад')
-        ax3.set_title("Курс (град)")
+        ax3 = self.fig1.add_subplot(2, 2, 3)
+        ax3.plot(time_hist, Psi_hist, 'purple', linewidth=2, label=r'$\Psi_{тек}$')
+        ax3.plot(time_hist, [Psi_zad_deg] * steps, 'r--', label=r'$\Psi_{зад}$')
+        ax3.set_title("Курс")
+        ax3.set_xlabel("Время, с")
+        ax3.set_ylabel(r'$\Psi$, град')
         ax3.grid(True)
         ax3.legend()
 
-        ax4 = self.figure.add_subplot(2, 2, 4)
-        ax4.plot(time_hist, Gamma_hist, 'orange', label='Крен (град)')
+        ax4 = self.fig1.add_subplot(2, 2, 4)
+        ax4.plot(time_hist, Gamma_hist, 'orange')
         ax4.plot(time_hist, [20] * steps, 'r:', alpha=0.5)
         ax4.plot(time_hist, [-20] * steps, 'r:', alpha=0.5)
-        ax4.set_title("Крен (град)")
+        ax4.set_title(r"Крен ($\gamma$)")
+        ax4.set_xlabel("Время, с")
+        ax4.set_ylabel("град")
         ax4.grid(True)
-        ax4.legend()
 
-        self.figure.tight_layout()
-        self.canvas.draw()
+        self.fig1.tight_layout()
+        self.canvas1.draw()
+
+        self.fig2.clear()
+        bx1 = self.fig2.add_subplot(2, 2, 1)
+        bx1.plot(time_hist, Nxa_hist, 'k')
+        bx1.set_title(r"Продольная перегрузка ($n_{xa}$)")
+        bx1.set_xlabel("Время, с")
+        bx1.grid(True)
+        bx2 = self.fig2.add_subplot(2, 2, 2)
+        bx2.plot(time_hist, Nya_hist, 'k')
+        bx2.set_title(r"Нормальная перегрузка ($n_{ya}$)")
+        bx2.set_xlabel("Время, с")
+        bx2.grid(True)
+        bx3 = self.fig2.add_subplot(2, 2, 3)
+        bx3.plot(time_hist, Nza_hist, 'k')
+        bx3.set_title(r"Боковая перегрузка ($n_{za}$)")
+        bx3.set_xlabel("Время, с")
+        bx3.grid(True)
+
+        self.fig2.tight_layout()
+        self.canvas2.draw()
+
+        self.fig3.clear()
+        cx1 = self.fig3.add_subplot(2, 2, 1)
+        cx1.plot(time_hist, U_nxa_hist, 'm')
+        cx1.set_title(r"Упр. скоростью ($u_{n_{xa}}$)")
+        cx1.set_xlabel("Время, с")
+        cx1.grid(True)
+        cx2 = self.fig3.add_subplot(2, 2, 2)
+        cx2.plot(time_hist, U_nya_hist, 'm')
+        cx2.set_title(r"Упр. высотой ($u_{n_{ya}}$)")
+        cx2.set_xlabel("Время, с")
+        cx2.grid(True)
+        cx3 = self.fig3.add_subplot(2, 2, 3)
+        cx3.plot(time_hist, U_nza_hist, 'm')
+        cx3.set_title(r"Упр. боковое ($u_{n_{za}}$)")
+        cx3.set_xlabel("Время, с")
+        cx3.grid(True)
+        cx4 = self.fig3.add_subplot(2, 2, 4)
+        cx4.plot(time_hist, U_gamma_hist, 'm')
+        cx4.set_title(r"Упр. креном ($u_{\gamma}$)")
+        cx4.set_xlabel("Время, с")
+        cx4.grid(True)
+        self.fig3.tight_layout()
+        self.canvas3.draw()
 
 
 if __name__ == "__main__":
