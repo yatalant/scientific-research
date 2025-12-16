@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QDoubleSpinBox, QPushButton,
-                             QGroupBox, QTabWidget, QDialog, QFormLayout)
+                             QGroupBox, QTabWidget)
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 
@@ -23,10 +23,10 @@ class P_Controller:
 class UAVModel:
     def __init__(self):
         self.g = 9.81
-        self.T_nxa = 0.1
-        self.T_nya = 0.1
+        self.T_nxa = 0.2
+        self.T_nya = 0.2
         self.xi_nya = 0.7
-        self.T_nza = 0.1
+        self.T_nza = 0.2
         self.T_gamma = 0.2
         self.V_max_limit = 100.0
 
@@ -69,9 +69,9 @@ class UAVModel:
 
 class Autopilot:
     def __init__(self):
-        self.reg_V = P_Controller(k=0.1, min_val=-10.0, max_val=10.0)
-        self.reg_H_outer = P_Controller(k=0.1, min_val=-2.0, max_val=2.0)
-        self.reg_H_inner = P_Controller(k=0.3, min_val=-10.0, max_val=10.0)
+        self.reg_V = P_Controller(k=2.0, min_val=-10.0, max_val=10.0)
+        self.reg_H_outer = P_Controller(k=0.5, min_val=-2.0, max_val=2.0)
+        self.reg_H_inner = P_Controller(k=5.0, min_val=None, max_val=None)
         self.limit_gamma = np.deg2rad(20.0)
         self.reg_Psi_outer = P_Controller(k=-0.8, min_val=-self.limit_gamma, max_val=self.limit_gamma)
         self.reg_Gamma_inner = P_Controller(k=3.0)
@@ -87,7 +87,7 @@ class Autopilot:
         gamma = state[10]
 
         V_err = targets['V'] - V
-        u_nxa = self.reg_V.update(V_err) + np.sin(theta)
+        u_nxa = self.reg_V.update(V_err)
 
         H_err = targets['H'] - y_h
         H_dot_zad = self.reg_H_outer.update(H_err)
@@ -112,53 +112,11 @@ class Autopilot:
         return np.array([u_nxa, u_nya, u_nza, u_gamma])
 
 
-class ControllerSettingsDialog(QDialog):
-    def __init__(self, autopilot):
-        super().__init__()
-        self.setWindowTitle("Настройки коэффициентов регулятора")
-        self.autopilot = autopilot
-        self.resize(300, 300)
-        layout = QFormLayout()
-
-        self.spin_V = self.create_spin(self.autopilot.reg_V)
-        layout.addRow("Скорость (V) K:", self.spin_V)
-
-        self.spin_H_out = self.create_spin(self.autopilot.reg_H_outer)
-        layout.addRow("Высота (H) K:", self.spin_H_out)
-
-        self.spin_H_in = self.create_spin(self.autopilot.reg_H_inner)
-        layout.addRow("Вертик. скор. (H_dot) K:", self.spin_H_in)
-
-        self.spin_Psi = self.create_spin(self.autopilot.reg_Psi_outer)
-        layout.addRow("Курс (Psi) K:", self.spin_Psi)
-
-        self.spin_Gamma = self.create_spin(self.autopilot.reg_Gamma_inner)
-        layout.addRow("Крен (Gamma) K:", self.spin_Gamma)
-
-        self.spin_nz = self.create_spin(self.autopilot.reg_nz)
-        layout.addRow("Бок. перегрузка (nz) K:", self.spin_nz)
-
-        self.setLayout(layout)
-
-    def create_spin(self, controller):
-        spin = QDoubleSpinBox()
-        spin.setRange(-100.0, 100.0)
-        spin.setSingleStep(0.1)
-        spin.setValue(controller.k)
-        spin.valueChanged.connect(lambda val, c=controller: self.update_k(c, val))
-        return spin
-
-    def update_k(self, controller, value):
-        controller.k = value
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Моделирование БПЛА")
         self.resize(1100, 800)
-
-        self.autopilot = Autopilot()
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -191,10 +149,6 @@ class MainWindow(QMainWindow):
         grp_sim.setLayout(layout_s)
         settings_layout.addWidget(grp_sim)
 
-        self.btn_settings = QPushButton("Настройки ПИ-регулятора")
-        self.btn_settings.clicked.connect(self.open_settings)
-        settings_layout.addWidget(self.btn_settings)
-
         self.btn_start = QPushButton("Запустить моделирование")
         self.btn_start.setStyleSheet("background-color: #FF69B4; color: white; font-weight: bold; padding: 12px;")
         self.btn_start.clicked.connect(self.run_simulation)
@@ -210,7 +164,7 @@ class MainWindow(QMainWindow):
 
         self.fig2 = plt.figure(figsize=(10, 8))
         self.canvas2 = FigureCanvas(self.fig2)
-        self.tabs.addTab(self.canvas2, "Перегрузки")
+        self.tabs.addTab(self.canvas2, "Перегрузки и углы")
 
         self.fig3 = plt.figure(figsize=(10, 8))
         self.canvas3 = FigureCanvas(self.fig3)
@@ -226,15 +180,10 @@ class MainWindow(QMainWindow):
         parent_layout.addWidget(spin)
         return spin
 
-    def open_settings(self):
-        dialog = ControllerSettingsDialog(self.autopilot)
-        dialog.exec()
-
     def run_simulation(self):
         V_zad = self.spin_V_zad.value()
         H_zad = self.spin_H_zad.value()
-        Psi_zad_deg = self.spin_Psi_zad.value()
-        Psi_zad = np.deg2rad(Psi_zad_deg)
+        Psi_zad = np.deg2rad(self.spin_Psi_zad.value())
 
         V0 = self.spin_V0.value()
         H0 = self.spin_H0.value()
@@ -245,6 +194,7 @@ class MainWindow(QMainWindow):
         steps = int(T_max / dt)
 
         model = UAVModel()
+        autopilot = Autopilot()
 
         state = np.zeros(12)
         state[0] = 0.0
@@ -281,7 +231,7 @@ class MainWindow(QMainWindow):
             Nza_hist[i] = state[9]
             Gamma_hist[i] = np.rad2deg(state[10])
 
-            controls = self.autopilot.calculate_controls(state, target_dict, model)
+            controls = autopilot.calculate_controls(state, target_dict, model)
 
             U_nxa_hist[i] = controls[0]
             U_nya_hist[i] = controls[1]
@@ -289,11 +239,12 @@ class MainWindow(QMainWindow):
             U_gamma_hist[i] = np.rad2deg(controls[3])
 
             state = model.rk4_step(state, controls, dt)
+            state[7] = np.clip(state[7], -8.0, 8.0)
 
         self.fig1.clear()
         ax1 = self.fig1.add_subplot(2, 2, 1)
-        ax1.plot(time_hist, H_hist, 'b', linewidth=2, label=r'$H_{тек}$')
-        ax1.plot(time_hist, [H_zad] * steps, 'r--', label=r'$H_{зад}$')
+        ax1.plot(time_hist, H_hist, 'b', linewidth=2, label=r'$H_{tek}$')
+        ax1.plot(time_hist, [H_zad] * steps, 'r--', label=r'$H_{zad}$')
         ax1.set_title("Высота")
         ax1.set_xlabel("Время, с")
         ax1.set_ylabel("H, м")
@@ -301,8 +252,8 @@ class MainWindow(QMainWindow):
         ax1.legend()
 
         ax2 = self.fig1.add_subplot(2, 2, 2)
-        ax2.plot(time_hist, V_hist, 'g', linewidth=2, label=r'$V_{тек}$')
-        ax2.plot(time_hist, [V_zad] * steps, 'r--', label=r'$V_{зад}$')
+        ax2.plot(time_hist, V_hist, 'g', linewidth=2, label=r'$V_{tek}$')
+        ax2.plot(time_hist, [V_zad] * steps, 'r--', label=r'$V_{zad}$')
         ax2.set_title("Скорость")
         ax2.set_xlabel("Время, с")
         ax2.set_ylabel("V, м/с")
@@ -310,23 +261,13 @@ class MainWindow(QMainWindow):
         ax2.legend()
 
         ax3 = self.fig1.add_subplot(2, 2, 3)
-        ax3.plot(time_hist, Psi_hist, 'purple', linewidth=2, label=r'$\Psi_{тек}$')
-        ax3.plot(time_hist, [Psi_zad_deg] * steps, 'r--', label=r'$\Psi_{зад}$')
+        ax3.plot(time_hist, Psi_hist, 'purple', linewidth=2, label=r'$\Psi_{tek}$')
+        ax3.plot(time_hist, [self.spin_Psi_zad.value()] * steps, 'r--', label=r'$\Psi_{zad}$')
         ax3.set_title("Курс")
         ax3.set_xlabel("Время, с")
         ax3.set_ylabel(r'$\Psi$, град')
         ax3.grid(True)
         ax3.legend()
-
-        ax4 = self.fig1.add_subplot(2, 2, 4)
-        ax4.plot(time_hist, Gamma_hist, 'orange')
-        ax4.plot(time_hist, [20] * steps, 'r:', alpha=0.5)
-        ax4.plot(time_hist, [-20] * steps, 'r:', alpha=0.5)
-        ax4.set_title(r"Крен ($\gamma$)")
-        ax4.set_xlabel("Время, с")
-        ax4.set_ylabel("град")
-        ax4.grid(True)
-
         self.fig1.tight_layout()
         self.canvas1.draw()
 
@@ -338,6 +279,8 @@ class MainWindow(QMainWindow):
         bx1.grid(True)
         bx2 = self.fig2.add_subplot(2, 2, 2)
         bx2.plot(time_hist, Nya_hist, 'k')
+        bx2.plot(time_hist, [8] * steps, 'r:', alpha=0.5)
+        bx2.plot(time_hist, [-8] * steps, 'r:', alpha=0.5)
         bx2.set_title(r"Нормальная перегрузка ($n_{ya}$)")
         bx2.set_xlabel("Время, с")
         bx2.grid(True)
@@ -346,13 +289,22 @@ class MainWindow(QMainWindow):
         bx3.set_title(r"Боковая перегрузка ($n_{za}$)")
         bx3.set_xlabel("Время, с")
         bx3.grid(True)
-
+        bx4 = self.fig2.add_subplot(2, 2, 4)
+        bx4.plot(time_hist, Gamma_hist, 'orange')
+        bx4.plot(time_hist, [20] * steps, 'r:', alpha=0.5)
+        bx4.plot(time_hist, [-20] * steps, 'r:', alpha=0.5)
+        bx4.set_title(r"Крен ($\gamma$)")
+        bx4.set_xlabel("Время, с")
+        bx4.set_ylabel("град")
+        bx4.grid(True)
         self.fig2.tight_layout()
         self.canvas2.draw()
 
         self.fig3.clear()
         cx1 = self.fig3.add_subplot(2, 2, 1)
         cx1.plot(time_hist, U_nxa_hist, 'm')
+        cx1.plot(time_hist, [10] * steps, 'r:', alpha=0.3)
+        cx1.plot(time_hist, [-10] * steps, 'r:', alpha=0.3)
         cx1.set_title(r"Упр. скоростью ($u_{n_{xa}}$)")
         cx1.set_xlabel("Время, с")
         cx1.grid(True)
