@@ -27,26 +27,22 @@ class UAVModel:
         self.T_nya = 0.1
         self.xi_nya = 0.7
         self.T_nza = 0.1
-        self.xi_nza = 0.7
         self.T_gamma = 0.2
         self.V_max_limit = 100.0
 
     def get_derivatives(self, state, u_control):
-
         x, y_h, z, V, theta, psi = state[0:6]
-        nxa = state[6]
-        nya, d_nya = state[7:9]
-        nza, d_nza = state[9:11]
-        gamma, d_gamma = state[11:13]
+        nxa, nya, d_nya, nza = state[6:10]
+        gamma, d_gamma = state[10:12]
 
         u_nxa, u_nya, u_nza, u_gamma = u_control
 
         if V < 0.1: V = 0.1
 
-
         dx = V * np.cos(psi) * np.cos(theta)
         dy = V * np.sin(theta)
         dz = -V * np.sin(psi) * np.cos(theta)
+
         dV = self.g * (nxa - np.sin(theta))
 
         cos_theta = np.cos(theta)
@@ -56,17 +52,11 @@ class UAVModel:
         dPsi = -(self.g / (V * cos_theta)) * (nya * np.sin(gamma) + nza * np.cos(gamma))
 
         dnxa = (u_nxa - nxa) / self.T_nxa
-
-        dnya_out = d_nya
         dd_nya = (u_nya - 2 * self.xi_nya * self.T_nya * d_nya - nya) / (self.T_nya ** 2)
-
-        dnza_out = d_nza
-        dd_nza = (u_nza - d_nza) / self.T_nza
-
-        dgamma_out = d_gamma
+        dnza = (u_nza - nza) / self.T_nza
         dd_gamma = (u_gamma - d_gamma) / self.T_gamma
 
-        return np.array([dx, dy, dz, dV, dTheta, dPsi, dnxa, dnya_out, dd_nya, dnza_out, dd_nza, dgamma_out, dd_gamma])
+        return np.array([dx, dy, dz, dV, dTheta, dPsi, dnxa, d_nya, dd_nya, dnza, d_gamma, dd_gamma])
 
     def rk4_step(self, state, u_control, dt):
         k1 = self.get_derivatives(state, u_control)
@@ -80,22 +70,21 @@ class UAVModel:
 class Autopilot:
     def __init__(self):
         self.reg_V = P_Controller(k=0.1, min_val=-10.0, max_val=10.0)
-        self.reg_H_outer = P_Controller(k=0.1, min_val=-2.0, max_val=2.0)
-        self.reg_H_inner = P_Controller(k=0.3, min_val=-10.0, max_val=10.0)
+        self.reg_H_outer = P_Controller(k=0.04, min_val=-2.0, max_val=2.0)
+        self.reg_H_inner = P_Controller(k=0.8, min_val=-10.0, max_val=10.0)
         self.limit_gamma = np.deg2rad(20.0)
         self.reg_Psi_outer = P_Controller(k=-0.8, min_val=-self.limit_gamma, max_val=self.limit_gamma)
         self.reg_Gamma_inner = P_Controller(k=3.0)
         self.reg_nz = P_Controller(k=2.0)
 
     def calculate_controls(self, state, targets, uav_params):
-  
         y_h = state[1]
         V = state[3]
         theta = state[4]
         psi = state[5]
         nya = state[7]
         nza = state[9]
-        gamma = state[11]
+        gamma = state[10]
 
         V_err = targets['V'] - V
         u_nxa = self.reg_V.update(V_err)
@@ -166,7 +155,7 @@ class ControllerSettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Моделирование БПЛА")
+        self.setWindowTitle("Моделирование БПЛА (Стабильная версия)")
         self.resize(1100, 800)
 
         self.autopilot = Autopilot()
@@ -198,7 +187,7 @@ class MainWindow(QMainWindow):
 
         grp_sim = QGroupBox("Симуляция")
         layout_s = QVBoxLayout()
-        self.spin_Time = self.create_spinbox("Время T (c):", 60.0, 5.0, 500.0, layout_s)
+        self.spin_Time = self.create_spinbox("Время T (c):", 150.0, 5.0, 500.0, layout_s)
         grp_sim.setLayout(layout_s)
         settings_layout.addWidget(grp_sim)
 
@@ -257,11 +246,12 @@ class MainWindow(QMainWindow):
 
         model = UAVModel()
 
-        state = np.zeros(13)
+        state = np.zeros(12)
+        state[0] = 0.0
         state[1] = H0
         state[3] = V0
         state[5] = Psi0
-        state[7] = 1.0  # nya
+        state[7] = 1.0
 
         time_hist = np.linspace(0, T_max, steps)
 
@@ -289,7 +279,7 @@ class MainWindow(QMainWindow):
             Nxa_hist[i] = state[6]
             Nya_hist[i] = state[7]
             Nza_hist[i] = state[9]
-            Gamma_hist[i] = np.rad2deg(state[11])
+            Gamma_hist[i] = np.rad2deg(state[10])
 
             controls = self.autopilot.calculate_controls(state, target_dict, model)
 
@@ -300,7 +290,6 @@ class MainWindow(QMainWindow):
 
             state = model.rk4_step(state, controls, dt)
             state[7] = np.clip(state[7], -8.0, 8.0)
-
         self.fig1.clear()
         ax1 = self.fig1.add_subplot(2, 2, 1)
         ax1.plot(time_hist, H_hist, 'b', linewidth=2, label=r'$H_{тек}$')
