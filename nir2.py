@@ -59,7 +59,7 @@ class UAVModel:
 
         dx = V * np.cos(psi) * np.cos(theta)
         dy = V * np.sin(theta)
-        dz = -V * np.sin(psi) * np.cos(theta)  # Знак "-" соответствует документации
+        dz = -V * np.sin(psi) * np.cos(theta)  
 
         dV = self.g * (nxa - np.sin(theta))
 
@@ -68,7 +68,7 @@ class UAVModel:
 
         dTheta = (self.g / V) * (nya * np.cos(gamma) - nza * np.sin(gamma) - cos_theta)
         dPsi = -(self.g / (V * cos_theta)) * (
-                    nya * np.sin(gamma) + nza * np.cos(gamma))  # Знак "-" соответствует документации
+                    nya * np.sin(gamma) + nza * np.cos(gamma))  
 
         dnxa = (u_nxa - nxa) / self.T_nxa
         dd_nya = (u_nya - 2 * self.xi_nya * self.T_nya * d_nya - nya) / (self.T_nya ** 2)
@@ -185,7 +185,7 @@ class ControllerSettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Моделирование БПЛА (ПИ-регуляторы)")
+        self.setWindowTitle("Моделирование БПЛА")
         self.resize(1100, 800)
 
         self.autopilot = Autopilot()
@@ -235,23 +235,21 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
 
-        # --- Исправление: Figure и Canvas создаются без add_subplot, чтобы быть пустыми ---
-        # Вкладка 1: Динамика полета
+        # Вкладка Динамика полета
         self.fig1 = Figure(figsize=(10, 8))
         self.canvas1 = FigureCanvas(self.fig1)
         self.tabs.addTab(self.canvas1, "Динамика полета")
 
-        # Вкладка 2: Перегрузки
+        # Вкладка Перегрузки
         self.fig2 = Figure(figsize=(10, 8))
         self.canvas2 = FigureCanvas(self.fig2)
         self.tabs.addTab(self.canvas2, "Перегрузки")
 
-        # Вкладка 3: Сигналы управления
+        # Вкладка Сигналы управления
         self.fig3 = Figure(figsize=(10, 8))
         self.canvas3 = FigureCanvas(self.fig3)
         self.tabs.addTab(self.canvas3, "Сигналы управления")
 
-        # --- Инициализация осей внутри update_plot методов, где они и очищаются ---
         self.ax1_h = None
         self.ax1_v = None
         self.ax1_psi = None
@@ -341,13 +339,12 @@ class MainWindow(QMainWindow):
             state = self.uav_model.rk4_step(state, controls, dt)
             state[7] = np.clip(state[7], -8.0, 8.0)
 
-        # --- Вызываем обновление графиков, теперь они будут создаваться и очищаться корректно ---
         self.update_plot1(time_hist, H_hist, V_hist, Psi_hist, Gamma_hist, target_dict)
         self.update_plot2(time_hist, Nxa_hist, Nya_hist, Nza_hist)
         self.update_plot3(time_hist, U_nxa_hist, U_nya_hist, U_nza_hist, U_gamma_hist)
 
     def update_plot1(self, time_hist, H_hist, V_hist, Psi_hist, Gamma_hist, target_dict):
-        self.fig1.clear()  # Очищаем всю фигуру перед созданием новых подграфиков
+        self.fig1.clear()  
         self.ax1_h = self.fig1.add_subplot(2, 2, 1)
         self.ax1_v = self.fig1.add_subplot(2, 2, 2)
         self.ax1_psi = self.fig1.add_subplot(2, 2, 3)
@@ -389,7 +386,7 @@ class MainWindow(QMainWindow):
         self.canvas1.draw()
 
     def update_plot2(self, time_hist, Nxa_hist, Nya_hist, Nza_hist):
-        self.fig2.clear()  # Очищаем всю фигуру перед созданием новых подграфиков
+        self.fig2.clear()  
         self.ax2_nxa = self.fig2.add_subplot(2, 2, 1)
         self.ax2_nya = self.fig2.add_subplot(2, 2, 2)
         self.ax2_nza = self.fig2.add_subplot(2, 2, 3)
@@ -413,7 +410,7 @@ class MainWindow(QMainWindow):
         self.canvas2.draw()
 
     def update_plot3(self, time_hist, U_nxa_hist, U_nya_hist, U_nza_hist, U_gamma_hist):
-        self.fig3.clear()  # Очищаем всю фигуру перед созданием новых подграфиков
+        self.fig3.clear()  
         self.ax3_unxa = self.fig3.add_subplot(2, 2, 1)
         self.ax3_unya = self.fig3.add_subplot(2, 2, 2)
         self.ax3_unza = self.fig3.add_subplot(2, 2, 3)
