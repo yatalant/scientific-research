@@ -155,7 +155,7 @@ class ControllerSettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Моделирование БПЛА (Стабильная версия)")
+        self.setWindowTitle("Моделирование БПЛА")
         self.resize(1100, 800)
 
         self.autopilot = Autopilot()
