@@ -4,10 +4,68 @@ import matplotlib.pyplot as plt
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QDoubleSpinBox, QPushButton,
                              QGroupBox, QTabWidget, QDialog, QFormLayout,
-                             QScrollArea, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView)
+                             QScrollArea, QTableWidget, QTableWidgetItem, QAbstractItemView,
+                             QHeaderView, QSlider, QProgressBar, QFrame)  # Добавлен QFrame
+from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath
+from PyQt6.QtCore import Qt
+
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
+
+class ArtificialHorizon(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(400, 400)
+        self.pitch = 0.0
+        self.roll = 0.0
+
+    def set_attitude(self, pitch, roll):
+        self.pitch = pitch
+        self.roll = roll
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        side = min(w, h) - 10
+        cx, cy = w / 2, h / 2
+
+        clip_path = QPainterPath()
+        clip_path.addEllipse(cx - side / 2, cy - side / 2, side, side)
+        painter.setClipPath(clip_path)
+
+        painter.translate(cx, cy)
+        painter.rotate(self.roll)
+        pitch_scale = 5.0
+        painter.translate(0, self.pitch * pitch_scale)
+
+        painter.fillRect(int(-w * 2), int(-h * 2), int(w * 4), int(h * 2), QColor(187, 224, 245))
+        painter.fillRect(int(-w * 2), 0, int(w * 4), int(h * 2), QColor(240, 200, 100))
+
+        painter.setPen(QPen(Qt.GlobalColor.white, 3))
+        painter.drawLine(int(-w), 0, int(w), 0)
+        for i in range(10, 90, 10):
+            y_sky = -i * pitch_scale
+            painter.drawLine(-40, int(y_sky), 40, int(y_sky))
+            y_ground = i * pitch_scale
+            painter.drawLine(-40, int(y_ground), 40, int(y_ground))
+
+        painter.resetTransform()
+        painter.translate(cx, cy)
+        painter.setPen(QPen(QColor(255, 105, 180), 6))
+        painter.drawLine(-90, 0, -25, 0)
+        painter.drawLine(25, 0, 90, 0)
+        painter.drawLine(0, 0, 0, 20)
+        painter.drawEllipse(-6, -6, 12, 12)
+
+        painter.resetTransform()
+        painter.setPen(QPen(QColor(255, 255, 255), 10))
+        painter.drawEllipse(int(cx - side / 2), int(cy - side / 2), int(side), int(side))
+        painter.end()
 
 class PI_Controller:
     def __init__(self, kp, ki, min_val=None, max_val=None, integral_limit=None):
@@ -25,7 +83,6 @@ class PI_Controller:
             self.integral_error = np.clip(self.integral_error, -self.integral_limit, self.integral_limit)
         i_output = self.integral_error * self.ki
         output = p_output + i_output
-
         if self.min_val is not None and self.max_val is not None:
             output = np.clip(output, self.min_val, self.max_val)
         return output
@@ -48,7 +105,6 @@ class UAVModel:
         x, y_h, z, V, theta, psi = state[0:6]
         nxa, nya, d_nya, nza = state[6:10]
         gamma, d_gamma = state[10:12]
-
         u_nxa, u_nya, u_nza, u_gamma = u_control
         if V < 0.1: V = 0.1
 
@@ -67,7 +123,6 @@ class UAVModel:
         dd_nya = (u_nya - 2 * self.xi_nya * self.T_nya * d_nya - nya) / (self.T_nya ** 2)
         dnza = (u_nza - nza) / self.T_nza
         dd_gamma = (u_gamma - d_gamma) / self.T_gamma
-
         return np.array([dx, dy, dz, dV, dTheta, dPsi, dnxa, d_nya, dd_nya, dnza, d_gamma, dd_gamma])
 
     def rk4_step(self, state, u_control, dt):
@@ -133,7 +188,6 @@ class ControllerSettingsDialog(QDialog):
         self.resize(350, 300)
         self.layout = QFormLayout()
         self.setLayout(self.layout)
-
         self.create_spin(self.autopilot.reg_V, 'kp', "V (Kp):")
         self.create_spin(self.autopilot.reg_V, 'ki', "V (Ki):")
         self.create_spin(self.autopilot.reg_H_outer, 'kp', "H (Kp):")
@@ -155,7 +209,6 @@ class ControllerSettingsDialog(QDialog):
         self.layout.addRow(label_text, spin)
         return spin
 
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -164,6 +217,8 @@ class MainWindow(QMainWindow):
 
         self.autopilot = Autopilot()
         self.uav_model = UAVModel()
+
+        self.sim_data = None
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -175,7 +230,6 @@ class MainWindow(QMainWindow):
 
         tab_std = QWidget()
         layout_std = QVBoxLayout(tab_std)
-
         grp_targets_std = QGroupBox("Задание")
         form_t_std = QFormLayout()
         self.spin_V_std = self.create_spinbox("V (м/с):", 25.0, 10.0, 100.0)
@@ -215,15 +269,12 @@ class MainWindow(QMainWindow):
         btn_start_std.clicked.connect(self.run_simulation)
         layout_std.addWidget(btn_start_std)
         layout_std.addStretch()
-
         self.left_tabs.addTab(tab_std, "Режим: В точку")
 
         tab_rte = QWidget()
         layout_rte = QVBoxLayout(tab_rte)
-
         grp_targets_rte = QGroupBox("Задание")
         form_t_rte = QFormLayout()
-
         self.spin_V_rte = self.create_spinbox("V (м/с):", 25.0, 10.0, 100.0)
         form_t_rte.addRow(self.spin_V_rte[0], self.spin_V_rte[1])
         grp_targets_rte.setLayout(form_t_rte)
@@ -251,8 +302,8 @@ class MainWindow(QMainWindow):
         default_waypoints = [(3000, 800, 50), (3000, 1800, 50), (0, 1800, 50), (0, 800, 50), (2850, 800, 50)]
         for pt in default_waypoints:
             self.add_wp_row(pt[0], pt[1], pt[2])
-        layout_tbl.addWidget(self.wp_table)
 
+        layout_tbl.addWidget(self.wp_table)
         row_btns = QHBoxLayout()
         btn_add = QPushButton("Добавить точку")
         btn_add.clicked.connect(lambda: self.add_wp_row(0, 0, 150))
@@ -264,14 +315,14 @@ class MainWindow(QMainWindow):
         grp_table.setLayout(layout_tbl)
         layout_rte.addWidget(grp_table)
 
-        btn_settings_rte = QPushButton("Настройки ПИ-регулятора")
-        btn_settings_rte.clicked.connect(self.open_settings)
-        layout_rte.addWidget(btn_settings_rte)
+        self.btn_settings_rte = QPushButton("Настройки ПИ-регулятора")
+        self.btn_settings_rte.clicked.connect(self.open_settings)
+        layout_rte.addWidget(self.btn_settings_rte)
 
-        btn_start_rte = QPushButton("Запустить полёт по маршруту")
-        btn_start_rte.setStyleSheet("background-color: #DA70D6; color: white; font-weight: bold; padding: 10px;")
-        btn_start_rte.clicked.connect(self.run_route_simulation)
-        layout_rte.addWidget(btn_start_rte)
+        self.btn_start_rte = QPushButton("Запустить полёт по маршруту")
+        self.btn_start_rte.setStyleSheet("background-color: #DA70D6; color: white; font-weight: bold; padding: 10px;")
+        self.btn_start_rte.clicked.connect(self.run_route_simulation)
+        layout_rte.addWidget(self.btn_start_rte)
         layout_rte.addStretch()
 
         self.left_tabs.addTab(tab_rte, "Режим: Маршрут")
@@ -279,21 +330,105 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
 
-        self.fig1 = Figure(figsize=(10, 8))
-        self.canvas1 = FigureCanvas(self.fig1)
+        self.fig1 = Figure(figsize=(10, 8));
+        self.canvas1 = FigureCanvas(self.fig1);
         self.tabs.addTab(self.canvas1, "Динамика полета")
-
-        self.fig2 = Figure(figsize=(10, 8))
-        self.canvas2 = FigureCanvas(self.fig2)
+        self.fig2 = Figure(figsize=(10, 8));
+        self.canvas2 = FigureCanvas(self.fig2);
         self.tabs.addTab(self.canvas2, "Перегрузки")
-
-        self.fig3 = Figure(figsize=(10, 8))
-        self.canvas3 = FigureCanvas(self.fig3)
+        self.fig3 = Figure(figsize=(10, 8));
+        self.canvas3 = FigureCanvas(self.fig3);
         self.tabs.addTab(self.canvas3, "Сигналы управления")
-
-        self.fig4 = Figure(figsize=(10, 8))
-        self.canvas4 = FigureCanvas(self.fig4)
+        self.fig4 = Figure(figsize=(10, 8));
+        self.canvas4 = FigureCanvas(self.fig4);
         self.tabs.addTab(self.canvas4, "Маршрут")
+
+        tab_pfd = QWidget()
+        layout_pfd = QVBoxLayout(tab_pfd)
+
+        hbox_pfd = QHBoxLayout()
+
+        self.horizon = ArtificialHorizon()
+        hbox_pfd.addWidget(self.horizon, stretch=3)
+
+        panel_bars = QFrame()
+        panel_bars.setStyleSheet("""
+            QFrame {
+                background-color: #FFD1DC;
+                border-radius: 12px;
+                border: 2px solid #555;
+            }
+            QLabel {
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: bold;
+                border: none;
+            }
+            QProgressBar {
+                border: 2px solid #444;
+                border-radius: 5px;
+                text-align: center;
+                color: white;
+                font-weight: bold;
+                background-color: #1a1a1a;
+            }
+        """)
+
+        layout_bars = QVBoxLayout(panel_bars)
+        layout_bars.setContentsMargins(20, 20, 20, 20)
+        layout_bars.setSpacing(15)
+
+        self.lbl_time_pfd = QLabel("ВРЕМЯ: 0.0 с");
+        self.lbl_time_pfd.setStyleSheet("color: #FFFFFF; font-size: 16px;")
+        self.lbl_alt_pfd = QLabel("ВЫСОТА: 0.0 м");
+        self.lbl_alt_pfd.setStyleSheet("color: #FFFFFF; font-size: 16px;")
+        self.lbl_hdg_pfd = QLabel("КУРС: 0.0°");
+        self.lbl_hdg_pfd.setStyleSheet("color: #FFFFFF; font-size: 16px;")
+
+        layout_bars.addWidget(self.lbl_time_pfd)
+        layout_bars.addWidget(self.lbl_alt_pfd)
+        layout_bars.addWidget(self.lbl_hdg_pfd)
+
+        layout_bars.addWidget(QLabel("СКОРОСТЬ (м/с)"))
+        self.bar_spd = QProgressBar()
+        self.bar_spd.setFixedHeight(30)
+        self.bar_spd.setRange(0, 50)
+        self.bar_spd.setFormat("%v м/с")
+        self.bar_spd.setStyleSheet("QProgressBar::chunk {background-color: #FF69B4; border-radius: 3px;}")
+        layout_bars.addWidget(self.bar_spd)
+
+        layout_bars.addWidget(QLabel("ТАНГАЖ (град)"))
+        self.bar_pitch = QProgressBar()
+        self.bar_pitch.setFixedHeight(30)
+        self.bar_pitch.setRange(-30, 30)
+        self.bar_pitch.setFormat("%v°")
+        self.bar_pitch.setStyleSheet("QProgressBar::chunk {background-color: #FF69B4; border-radius: 3px;}")
+        layout_bars.addWidget(self.bar_pitch)
+
+        layout_bars.addWidget(QLabel("КРЕН (град)"))
+        self.bar_roll = QProgressBar()
+        self.bar_roll.setFixedHeight(30)
+        self.bar_roll.setRange(-30, 30)
+        self.bar_roll.setFormat("%v°")
+        self.bar_roll.setStyleSheet("QProgressBar::chunk {background-color: #FF69B4; border-radius: 3px;}")
+        layout_bars.addWidget(self.bar_roll)
+
+        layout_bars.addStretch()
+
+        hbox_pfd.addWidget(panel_bars, stretch=1)
+        layout_pfd.addLayout(hbox_pfd)
+
+        self.time_slider = QSlider(Qt.Orientation.Horizontal)
+        self.time_slider.setFixedHeight(30)
+        self.time_slider.setStyleSheet("""
+            QSlider::groove:horizontal { height: 10px; background: #ddd; border-radius: 5px; }
+            QSlider::handle:horizontal { background: #FF69B4; width: 20px; height: 20px; margin: -5px 0; border-radius: 10px; }
+        """)
+        self.time_slider.setEnabled(False)
+        self.time_slider.valueChanged.connect(self.update_instruments)
+        layout_pfd.addWidget(self.time_slider)
+
+        self.tabs.addTab(tab_pfd, "Авиагоризонт")
 
     def create_spinbox(self, text, val, min_v, max_v):
         label = QLabel(text)
@@ -319,6 +454,23 @@ class MainWindow(QMainWindow):
         dialog = ControllerSettingsDialog(self.autopilot)
         dialog.exec()
 
+    def update_instruments(self, idx):
+        if not self.sim_data: return
+        d = self.sim_data
+
+        self.lbl_time_pfd.setText(f"ВРЕМЯ: {d['time'][idx]:.1f} с")
+        self.lbl_alt_pfd.setText(f"ВЫСОТА: {d['alt'][idx]:.1f} м")
+
+        hdg_compass = d['hdg'][idx] % 360
+        if hdg_compass < 0: hdg_compass += 360
+        self.lbl_hdg_pfd.setText(f"КУРС: {hdg_compass:.1f}°")
+
+        self.bar_spd.setValue(int(d['spd'][idx]))
+        self.bar_pitch.setValue(int(d['pitch'][idx]))
+        self.bar_roll.setValue(int(d['roll'][idx]))
+
+        self.horizon.set_attitude(d['pitch'][idx], d['roll'][idx])
+
     def run_simulation(self):
         self.autopilot.reset_controllers()
 
@@ -334,20 +486,27 @@ class MainWindow(QMainWindow):
         state[1], state[3], state[5], state[7] = H0, V0, Psi0, 1.0
 
         time_hist = np.linspace(0, T_max, steps)
-        H_hist, V_hist, Psi_hist, Gamma_hist = (np.zeros(steps) for _ in range(4))
+        H_hist, V_hist, Psi_hist, Gamma_hist, Theta_hist = (np.zeros(steps) for _ in range(5))
         Nxa_hist, Nya_hist, Nza_hist = (np.zeros(steps) for _ in range(3))
         U_nxa_hist, U_nya_hist, U_nza_hist, U_gamma_hist = (np.zeros(steps) for _ in range(4))
 
         H_zad_hist = np.full(steps, H_zad)
         V_zad_hist = np.full(steps, V_zad)
-        Psi_zad_hist = np.full(steps, np.rad2deg(Psi_zad))
+        Psi_zad_hist = np.zeros(steps)
 
         target_dict = {'V': V_zad, 'H': H_zad, 'Psi': Psi_zad}
 
         for i in range(steps):
             H_hist[i], V_hist[i] = state[1], state[3]
-            Psi_hist[i], Gamma_hist[i] = np.rad2deg(state[5]), np.rad2deg(state[10])
+            Gamma_hist[i] = np.rad2deg(state[10])
+            Theta_hist[i] = np.rad2deg(state[4])
             Nxa_hist[i], Nya_hist[i], Nza_hist[i] = state[6], state[7], state[9]
+
+            Psi_hist[i] = np.rad2deg(state[5])
+            Psi_err = Psi_zad - state[5]
+            while Psi_err > np.pi: Psi_err -= 2 * np.pi
+            while Psi_err < -np.pi: Psi_err += 2 * np.pi
+            Psi_zad_hist[i] = np.rad2deg(state[5] + Psi_err)
 
             controls = self.autopilot.calculate_controls(state, target_dict, self.uav_model, dt)
             U_nxa_hist[i], U_nya_hist[i], U_nza_hist[i], U_gamma_hist[i] = controls[0], controls[1], controls[
@@ -356,6 +515,14 @@ class MainWindow(QMainWindow):
             state = self.uav_model.rk4_step(state, controls, dt)
             state[7] = np.clip(state[7], -8.0, 8.0)
 
+        self.sim_data = {
+            'time': time_hist, 'alt': H_hist, 'spd': V_hist,
+            'hdg': Psi_hist, 'pitch': Theta_hist, 'roll': Gamma_hist
+        }
+        self.time_slider.setEnabled(True)
+        self.time_slider.setMaximum(len(time_hist) - 1)
+        self.time_slider.setValue(0)
+
         self.update_plot1(time_hist, H_hist, V_hist, Psi_hist, Gamma_hist, H_zad_hist, V_zad_hist, Psi_zad_hist)
         self.update_plot2(time_hist, Nxa_hist, Nya_hist, Nza_hist)
         self.update_plot3(time_hist, U_nxa_hist, U_nya_hist, U_nza_hist, U_gamma_hist)
@@ -363,7 +530,6 @@ class MainWindow(QMainWindow):
 
     def run_route_simulation(self):
         self.autopilot.reset_controllers()
-
         V_zad = self.spin_V_rte[1].value()
 
         waypoints = []
@@ -375,9 +541,7 @@ class MainWindow(QMainWindow):
                 waypoints.append((x, y, z))
             except (ValueError, AttributeError):
                 continue
-
-        if not waypoints:
-            return
+        if not waypoints: return
 
         current_wp = 0
         R_accept = 50.0
@@ -394,11 +558,10 @@ class MainWindow(QMainWindow):
 
         time_hist = np.zeros(steps)
         X_list, Y_h_list, Z_list = np.zeros(steps), np.zeros(steps), np.zeros(steps)
-        V_hist, Psi_hist, Gamma_hist = np.zeros(steps), np.zeros(steps), np.zeros(steps)
+        V_hist, Psi_hist, Gamma_hist, Theta_hist = np.zeros(steps), np.zeros(steps), np.zeros(steps), np.zeros(steps)
         Nxa_hist, Nya_hist, Nza_hist = np.zeros(steps), np.zeros(steps), np.zeros(steps)
         U_nxa_hist, U_nya_hist, U_nza_hist, U_gamma_hist = np.zeros(steps), np.zeros(steps), np.zeros(steps), np.zeros(
             steps)
-
         H_zad_hist, V_zad_hist, Psi_zad_hist = np.zeros(steps), np.zeros(steps), np.zeros(steps)
 
         for i in range(steps):
@@ -406,8 +569,10 @@ class MainWindow(QMainWindow):
             X_list[i], Y_h_list[i], Z_list[i] = state[0], state[1], state[2]
             V_hist[i] = state[3]
             Gamma_hist[i] = np.rad2deg(state[10])
-            Psi_hist[i] = (np.rad2deg(state[5]) + 180) % 360 - 180
+            Theta_hist[i] = np.rad2deg(state[4])
             Nxa_hist[i], Nya_hist[i], Nza_hist[i] = state[6], state[7], state[9]
+
+            Psi_hist[i] = np.rad2deg(state[5])
 
             map_X = state[0]
             map_Y = -state[2]
@@ -426,7 +591,11 @@ class MainWindow(QMainWindow):
 
             V_zad_hist[i] = V_zad
             H_zad_hist[i] = w_z
-            Psi_zad_hist[i] = np.rad2deg(Psi_zad)
+
+            Psi_err = Psi_zad - state[5]
+            while Psi_err > np.pi: Psi_err -= 2 * np.pi
+            while Psi_err < -np.pi: Psi_err += 2 * np.pi
+            Psi_zad_hist[i] = np.rad2deg(state[5] + Psi_err)
 
             controls = self.autopilot.calculate_controls(state, target_dict, self.uav_model, dt)
             U_nxa_hist[i], U_nya_hist[i], U_nza_hist[i], U_gamma_hist[i] = controls[0], controls[1], controls[
@@ -437,17 +606,25 @@ class MainWindow(QMainWindow):
 
         time_hist = time_hist[:i]
         X_list, Y_h_list, Z_list = X_list[:i], Y_h_list[:i], Z_list[:i]
-        V_hist, Psi_hist, Gamma_hist = V_hist[:i], Psi_hist[:i], Gamma_hist[:i]
+        V_hist, Psi_hist, Gamma_hist, Theta_hist = V_hist[:i], Psi_hist[:i], Gamma_hist[:i], Theta_hist[:i]
         Nxa_hist, Nya_hist, Nza_hist = Nxa_hist[:i], Nya_hist[:i], Nza_hist[:i]
         U_nxa_hist, U_nya_hist, U_nza_hist, U_gamma_hist = U_nxa_hist[:i], U_nya_hist[:i], U_nza_hist[:i], U_gamma_hist[
                                                                                                            :i]
         H_zad_hist, V_zad_hist, Psi_zad_hist = H_zad_hist[:i], V_zad_hist[:i], Psi_zad_hist[:i]
 
+        self.sim_data = {
+            'time': time_hist, 'alt': Y_h_list, 'spd': V_hist,
+            'hdg': Psi_hist, 'pitch': Theta_hist, 'roll': Gamma_hist
+        }
+        self.time_slider.setEnabled(True)
+        self.time_slider.setMaximum(len(time_hist) - 1)
+        self.time_slider.setValue(0)
+
         self.update_plot1(time_hist, Y_h_list, V_hist, Psi_hist, Gamma_hist, H_zad_hist, V_zad_hist, Psi_zad_hist)
         self.update_plot2(time_hist, Nxa_hist, Nya_hist, Nza_hist)
         self.update_plot3(time_hist, U_nxa_hist, U_nya_hist, U_nza_hist, U_gamma_hist)
         self.update_plot4(np.array(X_list), np.array(Y_h_list), np.array(Z_list), waypoints)
-        self.tabs.setCurrentIndex(3)
+        self.tabs.setCurrentIndex(4)
 
     def update_plot1(self, time_hist, H_hist, V_hist, Psi_hist, Gamma_hist, H_zad_hist, V_zad_hist, Psi_zad_hist):
         self.fig1.clear()
@@ -551,7 +728,7 @@ class MainWindow(QMainWindow):
         ax.set_xlabel('X, м')
         ax.set_ylabel('Y, м')
         ax.set_zlabel('H, м')
-        ax.set_title('Полёт по 3D маршруту')
+        ax.set_title('Полёт по маршруту')
 
         ax.view_init(elev=25, azim=-45)
         ax.legend()
