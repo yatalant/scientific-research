@@ -128,27 +128,34 @@ class PrimaryFlightDisplay(QWidget):
         font.setBold(False);
         painter.setFont(font);
         painter.setPen(Qt.GlobalColor.cyan)
-        painter.drawText(int(tape_x), int(cy + radius + 25), "Скорость м/с")
+        painter.drawText(int(tape_x), int(cy + radius + 25), "Скорость, м/с")
 
-        vsi_x = tape_x - 30
-        painter.setPen(QPen(Qt.GlobalColor.white, 2))
-        painter.drawLine(int(vsi_x), int(cy - 150), int(vsi_x), int(cy + 150))
-        painter.drawLine(int(vsi_x - 10), int(cy), int(vsi_x + 10), int(cy))
-        font.setPixelSize(10);
-        painter.setFont(font)
-        painter.drawText(int(vsi_x - 35), int(cy - 145), "+15")
-        painter.drawText(int(vsi_x - 35), int(cy + 155), "-15")
-
+        g_x = tape_x - 130
         font.setPixelSize(12);
+        font.setBold(False);
+        painter.setFont(font)
+
+        def draw_g_bar(x, y, name, val, min_v, max_v, normal_v, limit_min, limit_max):
+            painter.setPen(Qt.GlobalColor.white)
+            painter.drawText(x - 5, y - 5, f"{val:.1f}")
+            painter.drawRect(x, y, 12, 100)
+            color = Qt.GlobalColor.green if (limit_min <= val <= limit_max) else Qt.GlobalColor.red
+            val_c = np.clip(val, min_v, max_v)
+            fill_h = ((val_c - min_v) / (max_v - min_v)) * 100
+            painter.fillRect(x + 1, int(y + 100 - fill_h), 11, int(fill_h), color)
+            norm_y = y + 100 - ((normal_v - min_v) / (max_v - min_v)) * 100
+            painter.setPen(Qt.GlobalColor.white)
+            painter.drawLine(x - 3, int(norm_y), x + 15, int(norm_y))
+            painter.drawText(x, y + 115, name)
+
+        draw_g_bar(g_x, int(cy - 50), "Nx", self.nx, -1, 2, 0, -0.5, 1.5)
+        draw_g_bar(g_x + 40, int(cy - 50), "Ny", self.ny, -2, 6, 1, 0.0, 5.0)
+        draw_g_bar(g_x + 80, int(cy - 50), "Nz", self.nz, -2, 2, 0, -1.0, 1.0)
+
+        font.setPixelSize(14);
         painter.setFont(font);
         painter.setPen(Qt.GlobalColor.cyan)
-        painter.drawText(int(vsi_x - 40), int(cy + 175), "dH/dt")
-
-        vsi_y = cy - np.clip(self.vsi, -15, 15) * 10.0
-        painter.setPen(QPen(Qt.GlobalColor.cyan, 4))
-        painter.drawLine(int(vsi_x), int(cy), int(vsi_x), int(vsi_y))
-        painter.drawLine(int(vsi_x), int(vsi_y), int(vsi_x + 5), int(vsi_y + 5))
-        painter.drawLine(int(vsi_x), int(vsi_y), int(vsi_x - 5), int(vsi_y + 5))
+        painter.drawText(int(g_x + 10), int(cy + 90), "Перегрузки")
 
         tape_x_alt = cx + radius + 20
         painter.fillRect(int(tape_x_alt), int(cy - radius), tape_w, radius * 2, QColor(50, 50, 50, 200))
@@ -180,7 +187,7 @@ class PrimaryFlightDisplay(QWidget):
         font.setBold(False);
         painter.setFont(font);
         painter.setPen(Qt.GlobalColor.cyan)
-        painter.drawText(int(tape_x_alt), int(cy + radius + 25), "Высота м")
+        painter.drawText(int(tape_x_alt), int(cy + radius + 25), "Высота, м")
 
         hdg_y = cy + radius + 20
         hdg_w = 300
@@ -218,41 +225,28 @@ class PrimaryFlightDisplay(QWidget):
         font.setBold(False);
         painter.setFont(font);
         painter.setPen(Qt.GlobalColor.cyan)
-        painter.drawText(int(cx - 40), int(hdg_y + 60), "Курс град")
+        painter.drawText(int(cx - 40), int(hdg_y + 60), "Курс, град")
 
+        vsi_x = cx + radius + 130
+        painter.setPen(QPen(Qt.GlobalColor.white, 2))
+        painter.drawLine(int(vsi_x), int(cy - 150), int(vsi_x), int(cy + 150))
+        painter.drawLine(int(vsi_x - 10), int(cy), int(vsi_x + 10), int(cy))
 
-        g_x = cx + radius + 110
-        font.setPixelSize(12);
-        font.setBold(False);
+        font.setPixelSize(10);
         painter.setFont(font)
+        painter.drawText(int(vsi_x + 15), int(cy - 145), "+15")
+        painter.drawText(int(vsi_x + 15), int(cy + 155), "-15")
 
-        def draw_g_bar(x, y, name, val, min_v, max_v, normal_v, limit_min, limit_max):
-            painter.setPen(Qt.GlobalColor.white)
-
-            painter.drawText(x - 5, y - 5, f"{val:.1f}")
-
-            painter.drawRect(x, y, 12, 100)
-            color = Qt.GlobalColor.green if (limit_min <= val <= limit_max) else Qt.GlobalColor.red
-            val_c = np.clip(val, min_v, max_v)
-            fill_h = ((val_c - min_v) / (max_v - min_v)) * 100
-
-            painter.fillRect(x + 1, int(y + 100 - fill_h), 11, int(fill_h), color)
-
-            norm_y = y + 100 - ((normal_v - min_v) / (max_v - min_v)) * 100
-            painter.setPen(Qt.GlobalColor.white)
-            painter.drawLine(x - 3, int(norm_y), x + 15, int(norm_y))
-
-            painter.drawText(x, y + 115, name)
-
-        draw_g_bar(g_x, int(cy - 50), "Nx", self.nx, -1, 2, 0, -0.5, 1.5)
-        draw_g_bar(g_x + 40, int(cy - 50), "Ny", self.ny, -2, 6, 1, 0.0, 5.0)
-        draw_g_bar(g_x + 80, int(cy - 50), "Nz", self.nz, -2, 2, 0, -1.0, 1.0)
-
-        font.setPixelSize(14);
+        font.setPixelSize(12);
         painter.setFont(font);
         painter.setPen(Qt.GlobalColor.cyan)
-        painter.drawText(int(g_x + 10), int(cy + 90), "Перегрузки")
+        painter.drawText(int(vsi_x - 15), int(cy + 175), "dH/dt, м/с")
 
+        vsi_y = cy - np.clip(self.vsi, -15, 15) * 10.0
+        painter.setPen(QPen(Qt.GlobalColor.cyan, 4))
+        painter.drawLine(int(vsi_x), int(cy), int(vsi_x), int(vsi_y))
+        painter.drawLine(int(vsi_x), int(vsi_y), int(vsi_x + 5), int(vsi_y + 5))
+        painter.drawLine(int(vsi_x), int(vsi_y), int(vsi_x - 5), int(vsi_y + 5))
 
 class PI_Controller:
     def __init__(self, kp, ki, min_val=None, max_val=None, integral_limit=None):
